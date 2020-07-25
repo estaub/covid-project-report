@@ -2,3 +2,6 @@ This jupyter notebook produces a summary of the data on the 90,000+ GitHub COVID
 
 The notebook's output report is hosted at https://estaub.github.io/covid-project-report/.
 
+A [conda](https://docs.conda.io/en/latest/) `environment.yml` is included to ensure that the environment is reproducible.
+
+

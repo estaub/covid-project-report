@@ -1,13 +1,16 @@
+import hashlib
 from dataclasses import dataclass
 from typing import Union
 
 import gensim
 import nltk
+import numpy as np
 import pandas as pd
 from gensim import corpora, models
 from langdetect import DetectorFactory, detect_langs
 from nltk.stem import WordNetLemmatizer, SnowballStemmer
-import hashlib
+
+from timer import Timer
 from utils import mostRecentTsv
 
 DetectorFactory.seed = 0
@@ -56,7 +59,7 @@ def lemmatize_stemming(text):
 
 stopwords = set(list(gensim.parsing.preprocessing.STOPWORDS) + [
     'covid', 'corona', 'virus', 'coronavirus', 'ncov', 'project', 'data', 'http', 'https',
-    'github', 'pandemic', 'sar'
+    'github', 'pandemic', 'sar', 'challeng', 'inform','info'
 ])
 
 replacements = {
@@ -64,8 +67,8 @@ replacements = {
 }
 
 
-def preprocess(row):
-    if row[COL_hash]:
+def tokenize(row: pd.Series) -> [str]:
+    if row[COL_tokens]:
         return row[COL_tokens]
     result = []
 
@@ -82,40 +85,37 @@ def preprocess(row):
     return result + bigrams
 
 
-def lang_detect_row(row):
-    if row[COL_hash]:
+def lang_detect_row(row: pd.Series):
+    if row[COL_lang]:
         return row[COL_lang]
     desc = row[COL_repo_description]
     try:
-        lang_pairs = detect_langs(desc) if desc else None
+        lang_pairs = None
+        if desc:
+            lang_pairs = detect_langs(desc)
     except Exception as e:
         lang_pairs = None
     if lang_pairs and len(lang_pairs) and lang_pairs[0].prob > .66:
         lang = lang_pairs[0].lang
     else:
-        lang = None
+        lang = '__'
     return lang
 
 
-def dummy(row):
-    desc = row[COL_repo_description]
-    return 'dummy'
-
-
-@dataclass
-class SeedDoc:
-    name: str
-    weight: float
-    words: [str]
-
-    def make_seed(self) -> [[str]]:
-        return [self.words]
-
-
-seeds = [
-    SeedDoc('junk', 1, ['junk', 'garbage', 'flotsam', 'jetsam']),
-    SeedDoc('statistics', 1, ['statist', 'covidstat', 'data', ]),
-]
+# @dataclass
+# class SeedDoc:
+#     name: str
+#     weight: float
+#     words: [str]
+#
+#     def make_seed(self) -> [[str]]:
+#         return [self.words]
+#
+#
+# seeds = [
+#     SeedDoc('junk', 1, ['junk', 'garbage', 'flotsam', 'jetsam']),
+#     SeedDoc('statistics', 1, ['statist', 'covidstat', 'data', ]),
+# ]
 
 
 ## cache design
@@ -136,17 +136,13 @@ def hash_project_source(project):
         return src_hash
     hasher = hashlib.md5()
 
-    hashee = project[COL_repo_description]+'/'+project[COL_primary_language_name]+'/'+project[COL_github_repo_url]
+    hashee = project[COL_repo_description] + '/' + project[COL_primary_language_name] + '/' + \
+             project[COL_github_repo_url]
     hasher.update(hashee.encode('utf-8'))
     ret = hasher.hexdigest()
     return ret
 
 
-'''
-('novel coronavirus (covid-19) cases, provided by jhu csse', '', 'https://github.com/CSSEGISandData/COVID-19')
-('novel coronavirus (covid-19) cases, provided by jhu csse', '', 'https://github.com/CSSEGISandData/COVID-19')
-7225982222729356966
-'''
 cache_filename = 'cache.zip'
 
 
@@ -160,91 +156,24 @@ def write_cache(projects):
 
 
 def read_cache(projects):
-    def merge_cache(cache_row):
-        try:
-            url = cache_row[COL_github_repo_url]
+    def do_hashes_match(cache_row):
 
-            row = projects.loc[url, :]
-            if hash_project_source(row) == cache_row[COL_hash]:
-                row[COL_lang] = cache_row[COL_lang]
-                row[COL_tokens] = cache_row[COL_tokens]
-        except KeyError:
-            pass  # repo has been deleted
-        except Exception as e:
-            print('merge_cache error: ' + str(e))
+        new_hash = projects[COL_hash].get(cache_row.name)  # get returns None if missing
+        return new_hash == cache_row[COL_hash]
 
     try:
-        cache_df = pd.read_pickle(cache_filename)
-        cache_df[COL_github_repo_url] = cache_df.index
-        cache_df.apply(merge_cache, axis=1)
+        with Timer('computing hashes'):
+            projects[COL_hash] = projects.apply(hash_project_source, axis=1)
+        with Timer('reading cache'):
+            cache_df = pd.read_pickle(cache_filename)
+        with Timer('filtering cache for hash matches'):
+            matching_cache_df = cache_df[cache_df.apply(do_hashes_match, axis=1)]
+        with Timer('merging cache into projects'):
+            projects.update(matching_cache_df)
     except Exception as e:
         # printf('read_cache exception')
         print('read_cache exception: ' + str(e))
 
-
-def lsa():
-    tsvPath = mostRecentTsv()
-    projects = pd.read_csv(tsvPath, sep='\t', index_col=COL_github_repo_url)
-
-    projects = projects.head(100)  # todo remove
-
-    projects[COL_lang] = ''
-    projects[COL_tokens] = ''
-    projects[COL_hash] = ''
-    projects[COL_github_repo_url] = projects.index
-    projects.fillna(value='', inplace=True)
-    read_cache(projects)
-
-    print(len(projects))
-
-    # todo add fake topic-seeding docs
-    # todo add lang, preprocessing cache.  Lang detection is very slow.
-    # todo seed topics using eta https://gist.github.com/scign/2dda76c292ef76943e0cd9ff8d5a174a
-    langs = projects.apply(lang_detect_row, axis=1)
-    preprocessed = projects.apply(preprocess, axis=1)
-    projects[COL_lang] = langs
-    projects[COL_tokens] = preprocessed
-    write_cache(projects)
-
-    inputs = preprocessed
-
-    dictionary = gensim.corpora.Dictionary(inputs)
-
-    # def probe_dict(word: str):
-    #     idx = dictionary.token2id.get(word, None)
-    #     coll_freq = dictionary.cfs.get(idx, None)
-    #     doc_freq = dictionary.dfs.get(idx,None)
-    #     return f'probe: word={word} idx={idx} cfs={coll_freq} dfs={doc_freq}'
-    #
-    # print('before filter')
-    # print(probe_dict('case'))
-    dictionary.filter_extremes(no_below=50, no_above=0.5, keep_n=100000)
-    if len(dictionary) == 0:
-        print('No words in dictionary')
-        return
-    dictionary[len(dictionary) - 1]  # DO NOT REMOVE! HACK TO INIT id2token
-    dictFrame = pd.DataFrame({'token': dictionary.id2token})
-    freqs = dictFrame.index.map(lambda i: dictionary.cfs.get(i, 0))
-    dictFrame['freq'] = freqs
-    print(dictFrame.head())
-    freqFrame = dictFrame.sort_values(by='freq', ascending=False)
-    print(freqFrame.head())
-    tokenFrame = dictFrame.sort_values(by='token')
-    print(tokenFrame.head())
-    bow_corpus = [dictionary.doc2bow(doc) for doc in inputs]
-    tfidf = models.TfidfModel(bow_corpus)
-    corpus_tfidf = tfidf[bow_corpus]
-    lda_model = gensim.models.LdaMulticore(bow_corpus, num_topics=20, id2word=dictionary, passes=2,
-                                           chunksize=100000, workers=3)
-    for idx, topic in lda_model.print_topics(-1):
-        print('Topic: {} \nWords: {}'.format(idx, topic))
-    return lda_model
-
-
-print(lsa())
-
-
-# ['websit' 'hopkin_univers' 'descript' 'italia' 'case_death' 'notif', 'interact_visual' 'deploy' 'exposur' 'map' 'close' 'dato' 'page' nan, 'updat' 'confirm_case' 'finder' 'statist_countri' 'hopkin' 'protocol', 'research_dataset' 'tree' 'doc' 'visualis' 'so
 
 @dataclass
 class TopicDef():
@@ -254,17 +183,145 @@ class TopicDef():
     group: str = ''
 
 
-mytopics = [
-    TopicDef('mask', ['mask']),
-    TopicDef('social-distancing', ['social_distanc']),
-    TopicDef('mobile', ['mobil', 'android', 'ios']),
-    TopicDef('hospital', ['ventil', 'icu', 'hospit']),
-    TopicDef('case', ['case']),
-    TopicDef('italy', ['italy', 'caso']),
-    TopicDef('india', ['india']),
-    TopicDef('usa', ['']),
-    TopicDef('antibody', ['seri']),
-    TopicDef('contact-tracing', ['contact_tracing']),
-    TopicDef('visualization', ['chart', 'track']),
+ntopics = 20
 
+topic_defs = [
+    TopicDef('mask', ['mask', 'face', 'face_mask', 'wear', 'wear_mask','shield','face_shield']),
+    TopicDef('social-distancing', ['social_distanc']),
+    TopicDef('mobile', ['mobil', 'android','flutter','nativ']),
+    TopicDef('hospital', ['ventil', 'hospit', 'patient','doctor']),
+    TopicDef('case', ['case']),
+    TopicDef('india', ['india']),
+    TopicDef('brazil', ['brasil']),
+    # TopicDef('usa', ['usa']),
+    TopicDef('contact-tracing', ['contact_trace', 'trace', 'contact']),
+    TopicDef('visualization', ['chart', 'dashboard', 'visual']),
+    TopicDef('death',['death']),
+    TopicDef('prediction',['forecast', 'predict']),
 ]
+
+
+def create_eta(topic_defs: [TopicDef], etadict: corpora.Dictionary, ntopics: int) -> np.ndarray:
+    # create a (ntopics, nterms) matrix and fill with 1
+    eta = np.full(shape=(ntopics, len(etadict)), fill_value=1)
+    for topic_idx, topic_def in enumerate(topic_defs):  # for each word in the list of priors
+        for word in topic_def.words:
+            keyindex = [index for index, term in etadict.items() if
+                        term == word]  # find word in dict
+            if (len(keyindex) > 0):  # if it's in the dictionary
+                eta[topic_idx, keyindex[0]] = 1e7  # put a large number in there
+            else:
+                print(
+                    f'create_eta: word "{word}" of topic {topic_def.name} not found in dictionary')
+    eta = np.divide(eta, eta.sum(axis=0))  # normalize so probabilities sum to 1 over all topics
+    return eta
+
+# return doc freq, word freq, and sorted BoW of words in same docs as this one.
+def get_neighbors(word: str, dict: corpora.Dictionary, bow_corpus: [[int, int]]) -> [str, int]:
+
+    word_idx = dict.token2id.get(word, -1)
+    if word_idx < 0:
+        print('get_neighbors: word not in dictionary: ' + word)
+        return 0,0,[]
+    neighbor_dict={}
+    for bow in bow_corpus:
+        if next(((widx,_) for widx,_ in bow if widx==word_idx), False):
+            # doc has our word
+            for widx_other,_ in bow:
+                if widx_other != word_idx:
+                    neighbor_dict[widx_other] = neighbor_dict.get(widx_other, 0) + 1
+    neighbor_bow = sorted(neighbor_dict.items(), key=lambda x: x[1], reverse=True)
+    ret = [(dict[widx_neighbor], c) for widx_neighbor, c in neighbor_bow]
+    return dict.dfs[word_idx], dict.cfs[word_idx], ret
+
+def report_topic_words(topic_defs, dictionary, bow_corpus):
+    print('TOPIC WORD REPORT')
+    for topic_def in topic_defs:
+        print('  TOPIC  ' + topic_def.name)
+        for word in topic_def.words:
+            dfs, cfs, neighbor_bow = get_neighbors(word, dictionary, bow_corpus)
+            neighbor_bow = neighbor_bow[:10]
+            print(f'    {word}: dfs={dfs} cfs={cfs} {str(neighbor_bow)}')
+
+
+def lsa():
+    with Timer('read tsv'):
+        tsv_path = mostRecentTsv()
+        projects = pd.read_csv(tsv_path, sep='\t', index_col=COL_github_repo_url)
+
+        projects[COL_lang] = ''
+        projects[COL_tokens] = ''
+        projects[COL_hash] = ''
+        projects[COL_github_repo_url] = projects.index
+        projects.fillna(value='', inplace=True)
+
+    print('' + str(len(projects)) + ' repos')
+
+    read_cache(projects)
+
+    has_empty_lang = '' in projects[COL_lang].values
+    has_empty_tokens = '' in projects[COL_tokens].values
+    cache_needs_writing = has_empty_lang or has_empty_tokens
+
+    if has_empty_lang:
+        with Timer('detecting language'):
+            langs = projects.apply(lang_detect_row, axis=1)
+            projects[COL_lang] = langs
+
+    if has_empty_tokens:
+        with Timer('preprocessing tokens'):
+            tokens = projects.apply(tokenize, axis=1)
+            projects[COL_tokens] = tokens
+
+    if cache_needs_writing:
+        with Timer('writing cache'):
+            write_cache(projects)
+
+    with Timer('analyzing topics'):
+        # todo extract LDA function
+        inputs = projects[COL_tokens]
+
+        dictionary = gensim.corpora.Dictionary(inputs)
+
+        # def probe_dict(word: str):
+        #     idx = dictionary.token2id.get(word, None)
+        #     coll_freq = dictionary.cfs.get(idx, None)
+        #     doc_freq = dictionary.dfs.get(idx,None)
+        #     return f'probe: word={word} idx={idx} cfs={coll_freq} dfs={doc_freq}'
+        #
+        # print('before filter')
+        # print(probe_dict('case'))
+        dictionary.filter_extremes(no_below=50, no_above=0.5, keep_n=10000)
+        if len(dictionary) == 0:
+            print('No words in dictionary')
+            return
+        dictionary[len(dictionary) - 1]  # DO NOT REMOVE! HACK TO INIT id2token
+        dictFrame = pd.DataFrame({'token': dictionary.id2token})
+        freqs = dictFrame.index.map(lambda i: dictionary.cfs.get(i, 0))
+        dictFrame['freq'] = freqs
+        print(dictFrame.head())
+        freqFrame = dictFrame.sort_values(by='freq', ascending=False)
+        print(freqFrame.head())
+        tokenFrame = dictFrame.sort_values(by='token')
+        print(tokenFrame.head())
+        bow_corpus = [dictionary.doc2bow(doc) for doc in inputs]
+
+        report_topic_words(topic_defs, dictionary, bow_corpus)
+        # tfidf = models.TfidfModel(bow_corpus)
+        # corpus_tfidf = tfidf[bow_corpus]
+
+        # create seed matrix - from https://gist.github.com/scign/2dda76c292ef76943e0cd9ff8d5a174a
+        eta = create_eta(topic_defs, dictionary, ntopics)
+        lda_model = gensim.models.LdaMulticore(bow_corpus, num_topics=ntopics, eta=eta,
+                                               id2word=dictionary,
+                                               passes=2,
+                                               chunksize=100000, workers=3)
+    for idx, topic in lda_model.print_topics(-1):
+        print('Topic: {} \nWords: {}'.format(idx, topic))
+
+    return lda_model
+
+
+print(lsa())
+
+# ['websit' 'hopkin_univers' 'descript' 'italia' 'case_death' 'notif', 'interact_visual' 'deploy' 'exposur' 'map' 'close' 'dato' 'page' nan, 'updat' 'confirm_case' 'finder' 'statist_countri' 'hopkin' 'protocol', 'research_dataset' 'tree' 'doc' 'visualis' 'so

@@ -59,7 +59,16 @@ def lemmatize_stemming(text):
 
 stopwords = set(list(gensim.parsing.preprocessing.STOPWORDS) + [
     'covid', 'corona', 'virus', 'coronavirus', 'ncov', 'project', 'data', 'http', 'https',
-    'github', 'pandemic', 'sar', 'challeng', 'inform','info'
+    'github', 'pandemic', 'sar', 'challeng', 'inform', 'info', 'react', 'python', 'applic', 'time',
+    'updat', 'simpl', 'help', 'number', 'creat', 'repositori', 'covid_', 'report', 'build', 'peopl',
+    'use',
+    'pandem', 'relat', 'real', 'outbreak', 'sourc', 'develop', 'open', 'hackathon', 'diseas',
+    'contain', 'impact', 'novel', 'collect', 'scienc', 'john', 'hopkin', 'differ', 'oerson',
+    'epidem', 'design', 'resourc', 'base', 'extens', 'write', 'store', 'fact', 'appl', 'year',
+    'similar', 'repo', 'public', 'user', 'file', 'total', 'effect', 'basic', 'dato', 'crisi',
+    'support',
+    'import', 'place', 'look', 'text', 'team', 'fight', 'final', 'assist', 'case', 'track',
+    'assign', 'purpos'
 ])
 
 replacements = {
@@ -67,22 +76,28 @@ replacements = {
 }
 
 
-def tokenize(row: pd.Series) -> [str]:
-    if row[COL_tokens]:
-        return row[COL_tokens]
-    result = []
+def make_tokenizer(overwrite=False):
+    def tokenize(row: pd.Series) -> [str]:
+        if not overwrite and row[COL_tokens]:
+            return row[COL_tokens]
+        result = []
 
-    def split(text: str):
-        for token in gensim.utils.simple_preprocess(text):
-            token = replacements.get(token, token)
-            if token not in stopwords and len(token) > 3:
-                result.append(lemmatize_stemming(token))
+        def split(text: str):
+            for token in gensim.utils.simple_preprocess(text):
+                token = replacements.get(token, token)
+                if len(token) > 3 and token not in stopwords:
+                    stem = lemmatize_stemming(token)
+                    if stem not in stopwords:
+                        result.append(stem)
 
-    split(row[COL_repo_description])
-    bigrams = [a + '_' + b for a, b in nltk.bigrams(result)]
-    split(row[COL_owner_repo_name])
-    split(row[COL_topics])
-    return result + bigrams
+        split(row[COL_repo_description])
+        bigrams = [a + '_' + b for a, b in nltk.bigrams(result)]
+        split(row[COL_owner_repo_name])
+        split(row[COL_topics])
+        ret = result + bigrams
+        return ret
+
+    return tokenize
 
 
 def lang_detect_row(row: pd.Series):
@@ -100,22 +115,6 @@ def lang_detect_row(row: pd.Series):
     else:
         lang = '__'
     return lang
-
-
-# @dataclass
-# class SeedDoc:
-#     name: str
-#     weight: float
-#     words: [str]
-#
-#     def make_seed(self) -> [[str]]:
-#         return [self.words]
-#
-#
-# seeds = [
-#     SeedDoc('junk', 1, ['junk', 'garbage', 'flotsam', 'jetsam']),
-#     SeedDoc('statistics', 1, ['statist', 'covidstat', 'data', ]),
-# ]
 
 
 ## cache design
@@ -144,6 +143,8 @@ def hash_project_source(project):
 
 
 cache_filename = 'cache.zip'
+config_force_tokenize = False  # set true temporarily when stopwords are changed
+ntopics = 30
 
 
 def write_cache(projects):
@@ -183,22 +184,43 @@ class TopicDef():
     group: str = ''
 
 
-ntopics = 20
-
 topic_defs = [
-    TopicDef('mask', ['mask', 'face', 'face_mask', 'wear', 'wear_mask','shield','face_shield']),
-    TopicDef('social-distancing', ['social_distanc']),
-    TopicDef('mobile', ['mobil', 'android','flutter','nativ']),
-    TopicDef('hospital', ['ventil', 'hospit', 'patient','doctor']),
-    TopicDef('case', ['case']),
-    TopicDef('india', ['india']),
-    TopicDef('brazil', ['brasil']),
-    # TopicDef('usa', ['usa']),
-    TopicDef('contact-tracing', ['contact_trace', 'trace', 'contact']),
-    TopicDef('visualization', ['chart', 'dashboard', 'visual']),
-    TopicDef('death',['death']),
-    TopicDef('prediction',['forecast', 'predict']),
+    # TopicDef('mask', ['mask', 'face', 'face_mask', 'wear', 'wear_mask', 'shield', 'face_shield']),
+    # TopicDef('social-distancing', ['social_distanc']),
+    # TopicDef('mobile', ['mobil', 'android', 'flutter', 'nativ', 'bluetooth']),
+    # TopicDef('hospital', ['ventil', 'hospit', 'patient', 'doctor']),
+    # TopicDef('case', ['case', 'caso']),
+    # TopicDef('contact-tracing', ['contact_trace', 'trace', 'contact']),
+    # TopicDef('visualization',
+    #          ['chart', 'dashboard', 'visual', 'display', 'plot', 'graph', 'graphic']),
+    # TopicDef('death', ['death']),
+    # TopicDef('prediction', ['forecast', 'predict','simul','model']),
+    # TopicDef('application',
+    #          ['html', 'javascript', 'reactj', 'angular', 'websit', 'chart', 'dashboard',
+    #           'visual', 'display', 'plot', 'graph','page', 'server', 'service','interact']),
+
+    TopicDef('india', ['india']),  # enabled to try to keep India out of other topics
+    TopicDef('italy', ['itali']),
+    TopicDef('brazil', ['brasil', 'brazil']),
+    TopicDef('mexico', ['mexico']),
+    TopicDef('africa', ['africa', 'nigeria']),
+    TopicDef('canada', ['canada']),
+    TopicDef('nepal', ['nepal']),
+    TopicDef('bangladesh', ['bangladesh']),
+    TopicDef('pakistan', ['pakistan', 'lahor']),
+    TopicDef('usa', ['unit_state', 'state', 'counti']),
+    TopicDef('indonesia', ['indonesia']),
+    TopicDef('world', ['world', 'global', 'globe', 'countri']),
+    TopicDef('malaysia', ['malaysia']),
+    TopicDef('singapor', ['singapor']),
+    TopicDef('poland', ['poland']),
+    TopicDef('china', ['china', 'wuhan']),
+    TopicDef('indonesia', ['indonesia', 'casus']),
+    TopicDef('philippin',['philippin']),
 ]
+
+
+# MORE cuontries: malaysia, singapor, poland, pakistan, columbia, china
 
 
 def create_eta(topic_defs: [TopicDef], etadict: corpora.Dictionary, ntopics: int) -> np.ndarray:
@@ -209,30 +231,31 @@ def create_eta(topic_defs: [TopicDef], etadict: corpora.Dictionary, ntopics: int
             keyindex = [index for index, term in etadict.items() if
                         term == word]  # find word in dict
             if (len(keyindex) > 0):  # if it's in the dictionary
-                eta[topic_idx, keyindex[0]] = 1e7  # put a large number in there
+                eta[topic_idx, keyindex[0]] = 1e10  # put a large number in there
             else:
                 print(
                     f'create_eta: word "{word}" of topic {topic_def.name} not found in dictionary')
     eta = np.divide(eta, eta.sum(axis=0))  # normalize so probabilities sum to 1 over all topics
     return eta
 
+
 # return doc freq, word freq, and sorted BoW of words in same docs as this one.
 def get_neighbors(word: str, dict: corpora.Dictionary, bow_corpus: [[int, int]]) -> [str, int]:
-
     word_idx = dict.token2id.get(word, -1)
     if word_idx < 0:
         print('get_neighbors: word not in dictionary: ' + word)
-        return 0,0,[]
-    neighbor_dict={}
+        return 0, 0, []
+    neighbor_dict = {}
     for bow in bow_corpus:
-        if next(((widx,_) for widx,_ in bow if widx==word_idx), False):
+        if next(((widx, _) for widx, _ in bow if widx == word_idx), False):
             # doc has our word
-            for widx_other,_ in bow:
+            for widx_other, _ in bow:
                 if widx_other != word_idx:
                     neighbor_dict[widx_other] = neighbor_dict.get(widx_other, 0) + 1
     neighbor_bow = sorted(neighbor_dict.items(), key=lambda x: x[1], reverse=True)
     ret = [(dict[widx_neighbor], c) for widx_neighbor, c in neighbor_bow]
     return dict.dfs[word_idx], dict.cfs[word_idx], ret
+
 
 def report_topic_words(topic_defs, dictionary, bow_corpus):
     print('TOPIC WORD REPORT')
@@ -242,6 +265,13 @@ def report_topic_words(topic_defs, dictionary, bow_corpus):
             dfs, cfs, neighbor_bow = get_neighbors(word, dictionary, bow_corpus)
             neighbor_bow = neighbor_bow[:10]
             print(f'    {word}: dfs={dfs} cfs={cfs} {str(neighbor_bow)}')
+
+
+def report_hot_words(dictionary, nwords=1000):
+    sorted_cfs = sorted(dictionary.cfs.items(), key=lambda x: x[1], reverse=True)[:nwords]
+    sorted_words = [(dictionary[widx], count) for widx, count in sorted_cfs]
+    print('MOST USED WORDS IN CORPUS - TOP ' + str(nwords))
+    print(sorted_words)
 
 
 def lsa():
@@ -261,17 +291,19 @@ def lsa():
 
     has_empty_lang = '' in projects[COL_lang].values
     has_empty_tokens = '' in projects[COL_tokens].values
-    cache_needs_writing = has_empty_lang or has_empty_tokens
+    cache_needs_writing = False
 
     if has_empty_lang:
         with Timer('detecting language'):
             langs = projects.apply(lang_detect_row, axis=1)
             projects[COL_lang] = langs
+            cache_needs_writing = True
 
-    if has_empty_tokens:
+    if config_force_tokenize or has_empty_tokens:
         with Timer('preprocessing tokens'):
-            tokens = projects.apply(tokenize, axis=1)
+            tokens = projects.apply(make_tokenizer(config_force_tokenize), axis=1)
             projects[COL_tokens] = tokens
+            cache_needs_writing = True
 
     if cache_needs_writing:
         with Timer('writing cache'):
@@ -306,18 +338,24 @@ def lsa():
         print(tokenFrame.head())
         bow_corpus = [dictionary.doc2bow(doc) for doc in inputs]
 
+        report_hot_words(dictionary)
         report_topic_words(topic_defs, dictionary, bow_corpus)
         # tfidf = models.TfidfModel(bow_corpus)
         # corpus_tfidf = tfidf[bow_corpus]
 
         # create seed matrix - from https://gist.github.com/scign/2dda76c292ef76943e0cd9ff8d5a174a
         eta = create_eta(topic_defs, dictionary, ntopics)
-        lda_model = gensim.models.LdaMulticore(bow_corpus, num_topics=ntopics, eta=eta,
+        lda_model = gensim.models.LdaMulticore(bow_corpus,
                                                id2word=dictionary,
                                                passes=2,
                                                chunksize=100000, workers=3)
     for idx, topic in lda_model.print_topics(-1):
         print('Topic: {} \nWords: {}'.format(idx, topic))
+
+    print('TOP COHERENCE')
+    top_topics = lda_model.top_topics(corpus=bow_corpus, dictionary=dictionary, topn=10)
+    for topic, coherence in top_topics:
+        print(f'Coherence: {coherence} Words: {topic}')
 
     return lda_model
 
